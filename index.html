@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elite Tactical Soccer Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #1e1e24;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { margin-bottom: 10px; font-weight: 400; }
+        #controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            background: #2a2a35;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .input-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 12px; text-transform: uppercase; color: #aaa; letter-spacing: 1px; }
+        input {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background: #111;
+            color: #fff;
+            width: 80px;
+            text-align: center;
+            font-size: 14px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+            height: 38px;
+            margin-top: 15px;
+        }
+        #simulateBtn { background-color: #2ecc71; color: #fff; }
+        #simulateBtn:hover { background-color: #27ae60; }
+        #simulateBtn.active { background-color: #e74c3c; }
+        #resetBtn { background-color: #7f8c8d; color: #fff; }
+        #resetBtn:hover { background-color: #95a5a6; }
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        canvas { display: block; background-color: #27ae60; }
+        #scoreboard {
+            margin-top: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            background: #2a2a35;
+            padding: 8px 20px;
+            border-radius: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Tactical Stress-Test Simulator</h1>
+
+    <div id="controls">
+        <div class="input-group">
+            <label for="blueFormation">Blue Team</label>
+            <input type="text" id="blueFormation" value="4-3-3">
+        </div>
+        <div class="input-group">
+            <label for="redFormation">Red Team</label>
+            <input type="text" id="redFormation" value="4-4-2">
+        </div>
+        <button id="simulateBtn">Simulate Match</button>
+        <button id="resetBtn">Reset</button>
+        <div id="scoreboard">Blue 0 - 0 Red</div>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="pitch" width="450" height="650"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('pitch');
+        const ctx = canvas.getContext('2d');
+        const simulateBtn = document.getElementById('simulateBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const scoreboard = document.getElementById('scoreboard');
+
+        // Match State Variables
+        let isSimulating = false;
+        let animationFrameId;
+        let blueScore = 0;
+        let redScore = 0;
+        let lastScored = null;
+
+        // Pitch Configuration (Vertical orientation)
+        const pitch = {
+            width: canvas.width,
+            height: canvas.height,
+            pad: 25,
+            lineColor: 'rgba(255,255,255,0.7)',
+            grassColor: '#2d8a4e',
+            grassStreak: '#278045'
+        };
+
+        // Entity Dimensions
+        const PLAYER_RADIUS = 10;
+        const BALL_RADIUS = 5;
+
+        // Tactical Engine & Class definitions
+        class Player {
+            constructor(team, role, homeX, homeY, id) {
+                this.team = team;        // 'blue' (bottom) or 'red' (top)
+                this.role = role;        // 'G', 'D', 'M', 'A' (Goalkeeper, Defender, Midfielder, Attacker)
+                this.id = id;
+                this.homeX = homeX;      // Base tactical X coordinate
+                this.homeY = homeY;      // Base tactical Y coordinate
+                this.x = homeX;
+                this.y = homeY;
+                
+                // Real-time dynamic targets
+                let targetX = homeX;
+                let targetY = homeY;
+
+                // Physics / Movement mechanics
+                this.speed = team === 'blue' ? 2.1 : 2.0; // Subtle asymmetry
+                this.vX = 0;
+                this.vY = 0;
+
+                // Behavioral timers
+                this.cooldown = 0; 
+            }
+
+            update(ball, allPlayers) {
+                if (this.cooldown > 0) this.cooldown--;
+
+                // 1. Identify context
+                const teamInPossession = ball.controllingPlayer ? ball.controllingPlayer.team : ball.lastPossessionTeam;
+                const iHaveBall = ball.controllingPlayer === this;
+                
+                let targetX = this.homeX;
+                let targetY = this.homeY;
+
+                // Distance metrics
+                const distToBall = Math.hypot(ball.x - this.x, ball.y - this.y);
+
+                if (iHaveBall) {
+                    // EXECUTING ATTACK: Ball Carrier Decision Matrix
+                    const opponentGoalY = this.team === 'blue' ? pitch.pad : pitch.height - pitch.pad;
+                    const distToGoal = Math.abs(this.y - opponentGoalY);
+
+                    // Decision 1: Is a shot on target viable?
+                    if (distToGoal < 180 && Math.abs(this.x - pitch.width/2) < 120) {
+                        this.shoot(ball);
+                        return;
+                    }
+
+                    // Decision 2: Scan for passing lanes to forward teammates
+                    let passTarget = this.findBestPassOption(allPlayers);
+                    if (passTarget && (Math.random() < 0.05 || distToBall > 40)) {
+                        this.pass(ball, passTarget);
+                        return;
+                    }
+
+                    // Decision 3: Advance space through dribbling
+                    targetX = pitch.width / 2 + (Math.random() * 40 - 20);
+                    targetY = opponentGoalY;
+
+                } else {
+                    // OFF-BALL BEHAVIOR
+                    if (teamInPossession === this.team) {
+                        // Team is attacking: Advance space, find passing channels
+                        const pushForwardOffset = this.team === 'blue' ? -80 : 80;
+                        targetX = this.homeX + (ball.x - pitch.width / 2) * 0.3;
+                        targetY = this.homeY + pushForwardOffset;
+
+                        // Restrict over-extension for defenders
+                        if (this.role === 'D') targetY = (this.homeY + ball.y) / 2;
+                    } else {
+                        // Team is defending: Shift, collapse zones, press or mark
+                        if (this.role === 'G') {
+                            // GK Specific Zone Containment
+                            targetX = pitch.width / 2 + (ball.x - pitch.width / 2) * 0.2;
+                            targetY = this.homeY;
+                        } else {
+                            // Outfield defensive shifts
+                            const distBallToHome = Math.hypot(ball.x - this.homeX, ball.y - this.homeY);
+                            
+                            if (distBallToHome < 140 && ball.x > pitch.pad && ball.x < pitch.width - pitch.pad) {
+                                // Press ball carrier if within defensive zone responsibility
+                                targetX = ball.x;
+                                targetY = ball.y;
+                            } else {
+                                // Fall back to compact shapes to seal passing channels
+                                targetX = this.homeX + (ball.x - this.homeX) * 0.2;
+                                targetY = this.homeY + (this.team === 'blue' ? 20 : -20);
+                            }
+                        }
+                    }
+
+                    // Universal Instinct: Closest individual player always rushes loose balls
+                    if (!ball.controllingPlayer) {
+                        const closestTeammate = allPlayers
+                            .filter(p => p.team === this.team)
+                            .reduce((closest, p) => Math.hypot(ball.x - p.x, ball.y - p.y) < Math.hypot(ball.x - closest.x, ball.y - closest.y) ? p : closest);
+                        
+                        if (closestTeammate === this && distToBall < 180) {
+                            targetX = ball.x;
+                            targetY = ball.y;
+                        }
+                    }
+                }
+
+                // 2. Physical Engine Constraints
+                let dx = targetX - this.x;
+                let dy = targetY - this.y;
+                let dDist = Math.hypot(dx, dy);
+
+                if (dDist > 2) {
+                    this.vX = (dx / dDist) * this.speed;
+                    this.vY = (dy / dDist) * this.speed;
+                } else {
+                    this.vX *= 0.5;
+                    this.vY *= 0.5;
+                }
+
+                this.x += this.vX;
+                this.y += this.vY;
+
+                // Soft Pitch Bound Containment
+                this.x = Math.max(pitch.pad, Math.min(pitch.width - pitch.pad, this.x));
+                this.y = Math.max(pitch.pad, Math.min(pitch.height - pitch.pad, this.y));
+
+                // 3. Possession Intercept Calculations
+                if (!ball.controllingPlayer && distToBall < PLAYER_RADIUS + BALL_RADIUS && this.cooldown === 0) {
+                    if (!ball.controllingPlayer) {
+                        ball.controllingPlayer = this;
+                        ball.lastPossessionTeam = this.team;
+                    }
+                }
+            }
+
+            findBestPassOption(allPlayers) {
+                let options = allPlayers.filter(p => p.team === this.team && p !== this && p.role !== 'G');
+                let bestOption = null;
+                let highestScore = -Infinity;
+
+                options.forEach(p => {
+                    // Evaluate pass viability based on field positioning
+                    const forwardProgress = this.team === 'blue' ? (this.y - p.y) : (p.y - this.y);
+                    const dist = Math.hypot(p.x - this.x, p.y - this.y);
+                    
+                    if (dist > 40 && dist < 200) {
+                        let score = forwardProgress * 1.5 - dist * 0.2;
+                        
+                        // Check if opponents block passing channel path
+                        let opponents = allPlayers.filter(o => o.team !== this.team);
+                        let blocked = false;
+                        opponents.forEach(o => {
+                            // Dist from opponent to line segment between pass partners
+                            if (distToSegment({x: o.x, y: o.y}, {x: this.x, y: this.y}, {x: p.x, y: p.y}) < 22) {
+                                blocked = true;
+                            }
+                        });
+
+                        if (!blocked && score > highestScore) {
+                            highestScore = score;
+                            bestOption = p;
+                        }
+                    }
+                });
+                return bestOption;
+            }
+
+            pass(ball, targetPlayer) {
+                ball.controllingPlayer = null;
+                const dx = targetPlayer.x - this.x;
+                const dy = targetPlayer.y - this.y;
+                const dist = Math.hypot(dx, dy);
+                
+                ball.vX = (dx / dist) * 6.5;
+                ball.vY = (dy / dist) * 6.5;
+                
+                this.cooldown = 25; // Prevents instantly retaking passed ball
+                targetPlayer.cooldown = 5;
+            }
+
+            shoot(ball) {
+                ball.controllingPlayer = null;
+                const targetGoalX = pitch.width / 2 + (Math.random() * 40 - 20); // Aim variation
+                const targetGoalY = this.team === 'blue' ? pitch.pad : pitch.height - pitch.pad;
+                
+                const dx = targetGoalX - this.x;
+                const dy = targetGoalY - this.y;
+                const dist = Math.hypot(dx, dy);
+
+                ball.vX = (dx / dist) * 9.5;
+                ball.vY = (dy / dist) * 9.5;
+                this.cooldown = 40;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, PLAYER_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = this.team === 'blue' ? '#2980b9' : '#c0392b';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                // Role indicators printed directly on chips
+                ctx.fillStyle = '#fff';
+                ctx.font = '9px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.role, this.x, this.y);
+            }
+        }
+
+        class Ball {
+            constructor() {
+                this.reset();
+            }
+
+            reset() {
+                this.x = pitch.width / 2;
+                this.y = pitch.height / 2;
+                this.vX = 0;
+                this.vY = 0;
+                this.controllingPlayer = null;
+                this.lastPossessionTeam = lastScored === 'blue' ? 'red' : 'blue';
+            }
+
+            update() {
+                if (this.controllingPlayer) {
+                    // Lock ball coordinates directly to position of the controlling chip
+                    const offset = this.controllingPlayer.team === 'blue' ? -8 : 8;
+                    this.x = this.controllingPlayer.x;
+                    this.y = this.controllingPlayer.y + offset;
+                    this.vX = 0;
+                    this.vY = 0;
+                } else {
+                    // Physics equations accounting for velocity and kinetic friction
+                    this.x += this.vX;
+                    this.y += this.vY;
+                    this.vX *= 0.98;
+                    this.vY *= 0.98;
+
+                    // Side wall boundary reflections
+                    if (this.x <= pitch.pad + BALL_RADIUS || this.x >= pitch.width - pitch.pad - BALL_RADIUS) {
+                        this.vX *= -1;
+                        this.x = this.x <= pitch.pad + BALL_RADIUS ? pitch.pad + BALL_RADIUS : pitch.width - pitch.pad - BALL_RADIUS;
+                    }
+
+                    // Endline containment calculations
+                    if (this.y <= pitch.pad || this.y >= pitch.height - pitch.pad) {
+                        const goalLeft = pitch.width / 2 - 45;
+                        const goalRight = pitch.width / 2 + 45;
+
+                        if (this.x > goalLeft && this.x < goalRight) {
+                            // Goal verification triggers
+                            if (this.y <= pitch.pad) blueScore++;
+                            else redScore++;
+                            
+                            lastScored = this.y <= pitch.pad ? 'blue' : 'red';
+                            updateScoreboard();
+                            resetPositions();
+                        } else {
+                            // Out of bounds endline reflections (Simulates goal kicks / corner returns)
+                            this.vY *= -1;
+                            this.y = this.y <= pitch.pad ? pitch.pad + 2 : pitch.height - pitch.pad - 2;
+                            this.vX += (Math.random() * 2 - 1); // Add loose variance
+                        }
+                    }
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, BALL_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
+
+        // Global instances
+        let players = [];
+        const ball = new Ball();
+
+        // Mathematical helper functions for processing spatial AI calculations
+        function sqr(x) { return x * x; }
+        function dist2(v, w) { return sqr(v.x - w.x) + sqr(v.y - w.y); }
+        function distToSegmentSquared(p, v, w) {
+            let l2 = dist2(v, w);
+            if (l2 == 0) return dist2(p, v);
+            let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            return dist2(p, { x: v.x + t * (w.x - v.x), y: v.y + t * (w.y - v.y) });
+        }
+        function distToSegment(p, v, w) { return Math.sqrt(distToSegmentSquared(p, v, w)); }
+
+        // Formation Parser and Coordinate Matrix Builder
+        function buildTeamFromFormation(team, formationString) {
+            const teamPlayers = [];
+            const parts = formationString.split('-').map(Number);
+            const totalOutfield = parts.reduce((a, b) => a + b, 0);
+
+            if (totalOutfield !== 10 || parts.some(isNaN)) {
+                alert(`Invalid formation: "${formationString}". Format structure must total 10 outfield players (e.g., 4-3-3, 4-4-2, 3-5-2).`);
+                return null;
+            }
+
+            const isBlue = team === 'blue';
+            const usableHeight = (pitch.height / 2) - pitch.pad - 30;
+            
+            // 1. Generate Goalkeeper Base Anchor
+            const gkY = isBlue ? pitch.height - pitch.pad - 15 : pitch.pad + 15;
+            teamPlayers.push(new Player(team, 'G', pitch.width / 2, gkY, 1));
+
+            // 2. Parse structural lines (Defenders -> Midfielders -> Attackers)
+            let currentId = 2;
+            parts.forEach((lineCount, lineIndex) => {
+                // Calculate spatial row height allocation
+                let progressFraction = lineIndex / (parts.length - 1); // 0 at back line, 1 at front line
+                
+                let rowY;
+                if (isBlue) {
+                    rowY = (pitch.height / 2) + 30 + (1 - progressFraction) * usableHeight;
+                } else {
+                    rowY = pitch.pad + 30 + progressFraction * usableHeight;
+                }
+
+                // Categorize role based on row depth placement
+                let role = 'M';
+                if (lineIndex === 0) role = 'D';
+                else if (lineIndex === parts.length - 1) role = 'A';
+
+                // Distribute players horizontally across the calculated row depth
+                for (let i = 0; i < lineCount; i++) {
+                    let horizontalFraction = lineCount === 1 ? 0.5 : i / (lineCount - 1);
+                    let paddingX = 40;
+                    let rowX = paddingX + horizontalFraction * (pitch.width - paddingX * 2);
+
+                    teamPlayers.push(new Player(team, role, rowX, rowY, currentId++));
+                }
+            });
+
+            return teamPlayers;
+        }
+
+        function parseFormations() {
+            const blueStr = document.getElementById('blueFormation').value.trim();
+            const redStr = document.getElementById('redFormation').value.trim();
+
+            const blueSet = buildTeamFromFormation('blue', blueStr);
+            const redSet = buildTeamFromFormation('red', redStr);
+
+            if (blueSet && redSet) {
+                players = [...blueSet, ...redSet];
+                ball.reset();
+            }
+        }
+
+        function resetPositions() {
+            ball.reset();
+            const blueStr = document.getElementById('blueFormation').value.trim();
+            const redStr = document.getElementById('redFormation').value.trim();
+            const blueSet = buildTeamFromFormation('blue', blueStr);
+            const redSet = buildTeamFromFormation('red', redStr);
+            if (blueSet && redSet) {
+                players = [...blueSet, ...redSet];
+            }
+        }
+
+        function updateScoreboard() {
+            scoreboard.innerText = `Blue ${blueScore} - ${redScore} Red`;
+        }
+
+        // Render Field Layout Elements
+        function drawPitch() {
+            // Draw Grass Surface
+            ctx.fillStyle = pitch.grassColor;
+            ctx.fillRect(0, 0, pitch.width, pitch.height);
+
+            // Mowed lawn structural stripes
+            ctx.fillStyle = pitch.grassStreak;
+            for (let i = pitch.pad; i < pitch.height - pitch.pad; i += 60) {
+                if ((i / 60) % 2 === 0) {
+                    ctx.fillRect(pitch.pad, i, pitch.width - pitch.pad * 2, Math.min(30, pitch.height - pitch.pad - i));
+                }
+            }
+
+            // Outer Boundary Lines
+            ctx.strokeStyle = pitch.lineColor;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(pitch.pad, pitch.pad, pitch.width - pitch.pad * 2, pitch.height - pitch.pad * 2);
+
+            // Center Line Halfway Marker
+            ctx.beginPath();
+            ctx.moveTo(pitch.pad, pitch.height / 2);
+            ctx.lineTo(pitch.width - pitch.pad, pitch.height / 2);
+            ctx.stroke();
+
+            // Center Circle
+            ctx.beginPath();
+            ctx.arc(pitch.width / 2, pitch.height / 2, 50, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(pitch.width / 2, pitch.height / 2, 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Penalty Boxes (Top and Bottom halves)
+            // Penalty Box Top
+            ctx.strokeRect(pitch.width / 2 - 80, pitch.pad, 160, 70);
+            ctx.strokeRect(pitch.width / 2 - 35, pitch.pad, 70, 25);
+            // Penalty Box Bottom
+            ctx.strokeRect(pitch.width / 2 - 80, pitch.height - pitch.pad - 70, 160, 70);
+            ctx.strokeRect(pitch.width / 2 - 35, pitch.height - pitch.pad - 25, 70, 25);
+
+            // Goal Net Frame Lines
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+            // Top Goal Box Area
+            ctx.strokeRect(pitch.width / 2 - 25, pitch.pad - 8, 50, 8);
+            // Bottom Goal Box Area
+            ctx.strokeRect(pitch.width / 2 - 25, pitch.height - pitch.pad, 50, 8);
+        }
+
+        // Processing Loop Initialization
+        function simulationStep() {
+            if (!isSimulating) return;
+
+            // Compute math step transformations for players and the ball
+            players.forEach(p => p.update(ball, players));
+            ball.update();
+
+            // Clear frame buffer and redraw
+            ctx.clearRect(0, 0, pitch.width, pitch.height);
+            drawPitch();
+            players.forEach(p => p.draw());
+            ball.draw();
+
+            animationFrameId = requestAnimationFrame(simulationStep);
+        }
+
+        // Input Button Configuration Events
+        simulateBtn.addEventListener('click', () => {
+            if (!isSimulating) {
+                parseFormations();
+                isSimulating = true;
+                simulateBtn.innerText = "Pause Simulation";
+                simulateBtn.classList.add('active');
+                simulationStep();
+            } else {
+                isSimulating = false;
+                simulateBtn.innerText = "Simulate Match";
+                simulateBtn.classList.remove('active');
+                cancelAnimationFrame(animationFrameId);
+            }
+        });
+
+        resetBtn.addEventListener('click', () => {
+            isSimulating = false;
+            simulateBtn.innerText = "Simulate Match";
+            simulateBtn.classList.remove('active');
+            cancelAnimationFrame(animationFrameId);
+            blueScore = 0;
+            redScore = 0;
+            lastScored = null;
+            updateScoreboard();
+            parseFormations();
+            
+            // Immediate fresh frame update
+            ctx.clearRect(0, 0, pitch.width, pitch.height);
+            drawPitch();
+            players.forEach(p => p.draw());
+            ball.draw();
+        });
+
+        // Initialize setup variables on runtime launch
+        window.onload = () => {
+            parseFormations();
+            drawPitch();
+            players.forEach(p => p.draw());
+            ball.draw();
+        };
+    </script>
+</body>
+</html>
