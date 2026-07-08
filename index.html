@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Elite Interactive Soccer Sandbox v3</title>
+    <title>Elite Tactical Soccer Sandbox v4</title>
     <style>
         body {
             margin: 0;
@@ -109,7 +109,6 @@
         let redScore = 0;
         let lastScored = null;
         
-        // Dragging State Tracking Variables
         let selectedPlayer = null;
         let isDragging = false;
 
@@ -142,15 +141,17 @@
                     else if (pct >= 0.7) this.lane = 'R';
                 }
 
-                this.speed = 2.5; 
+                this.speed = 2.4; 
                 this.vX = 0;
                 this.vY = 0;
                 this.cooldown = 0; 
+                this.dribbleTicks = 0; // Tracks duration of current possession stretch
+                this.lastPassTargetId = null; // Memory element to block short-circuit loops
             }
 
             update(ball, allPlayers) {
                 if (this.cooldown > 0) this.cooldown--;
-                if (selectedPlayer === this) return; // Freeze dynamic AI logic calculation if being dragged manually
+                if (selectedPlayer === this) return; 
 
                 const teamInPossession = ball.controllingPlayer ? ball.controllingPlayer.team : ball.lastPossessionTeam;
                 const iHaveBall = ball.controllingPlayer === this;
@@ -161,43 +162,61 @@
                 const distToBall = Math.hypot(ball.x - this.x, ball.y - this.y);
 
                 if (iHaveBall) {
-                    // 1. BALL CARRIER INDEPENDENT THINKING TREE
+                    this.dribbleTicks++;
                     const distToGoal = Math.hypot(pitch.width/2 - this.x, opponentGoalY - this.y);
+                    const opponents = allPlayers.filter(o => o.team !== this.team);
+                    
+                    // Evaluate threat level of closest incoming defender
+                    let closestDefenderDist = Infinity;
+                    opponents.forEach(o => {
+                        let d = Math.hypot(o.x - this.x, o.y - this.y);
+                        if (d < closestDefenderDist) closestDefenderDist = d;
+                    });
 
-                    // A. Shoot if within shooting distance window
-                    if (distToGoal < 180) {
+                    // Priority 1: High attacking zone shooting instinct
+                    if (distToGoal < 190) {
                         this.shoot(ball);
                         return;
                     }
 
-                    // B. Systematically look to execute a smart tactical pass
-                    let passTarget = this.findSmartPass(allPlayers);
-                    if (passTarget) {
-                        this.pass(ball, passTarget);
-                        return;
+                    // Priority 2: Force intentional dribbling to advance the attack line
+                    // The player will refuse to pass if there's green grass in front and threat is low
+                    let mustPass = closestDefenderDist < 55 || this.dribbleTicks > 120;
+                    
+                    if (mustPass) {
+                        let passTarget = this.findSmartPass(allPlayers);
+                        if (passTarget) {
+                            this.pass(ball, passTarget);
+                            this.dribbleTicks = 0;
+                            return;
+                        }
                     }
 
-                    // C. Dribble directly toward opponent territory if passing lanes are blocked
+                    // Execution path for Dribble/Drive state
                     const dirY = this.team === 'blue' ? -1 : 1;
-                    targetY = this.y + dirY * 40;
-                    targetX = this.x + (pitch.width/2 - this.x) * 0.15; 
+                    targetY = this.y + dirY * 50;
+                    
+                    // Slightly lean towards attacking the center lane box
+                    targetX = this.x + (pitch.width/2 - this.x) * 0.2; 
 
                 } else {
-                    // 2. OFF-BALL COMBAT & TACTICAL STATE MACHINE
+                    this.dribbleTicks = 0;
+                    
+                    // OFF-BALL BEHAVIORS
                     if (teamInPossession === this.team) {
-                        // OFF-BALL ATTACKING STATE: Shift forward relative to ball location, spread out
-                        const progress = (this.team === 'blue') ? (ball.y - pitch.height) * 0.35 : (ball.y * 0.35);
+                        // Attack Support: Push deep and move vertically to establish passing channels
+                        const progress = (this.team === 'blue') ? (ball.y - pitch.height) * 0.45 : (ball.y * 0.45);
                         targetY = this.homeY + progress;
                         
-                        if (this.lane === 'L') targetX = this.homeX - 35;
-                        else if (this.lane === 'R') targetX = this.homeX + 35;
-                        else targetX = this.homeX + (ball.x - pitch.width/2) * 0.25;
+                        if (this.lane === 'L') targetX = this.homeX - 20;
+                        else if (this.lane === 'R') targetX = this.homeX + 20;
+                        else targetX = this.homeX + (ball.x - pitch.width/2) * 0.3;
 
-                        if (this.role === 'D') targetY = this.homeY + (ball.y - this.homeY) * 0.2; // Guard line safety anchoring
+                        if (this.role === 'D') targetY = this.homeY + (ball.y - this.homeY) * 0.25; 
                     } else {
-                        // DEFENSIVE COMPRESSION STATE: Close ranks, track runners
-                        targetY = this.homeY + (ball.y - this.homeY) * 0.55;
-                        targetX = this.homeX + (ball.x - pitch.width/2) * 0.2;
+                        // Defend Transition: Maintain cohesive compression rows
+                        targetY = this.homeY + (ball.y - this.homeY) * 0.6;
+                        targetX = this.homeX + (ball.x - pitch.width/2) * 0.25;
 
                         if (this.role === 'G') {
                             targetX = pitch.width / 2 + (ball.x - pitch.width / 2) * 0.2;
@@ -205,24 +224,23 @@
                         }
                     }
 
-                    // 3. AGGRESSIVE LOOSE BALL SCRAMBLING Instinct
-                    // If no one controls the ball or opponent is close, register interest based on distance threshold matrix
-                    let claimThreshold = 140;
-                    if (!ball.controllingPlayer) claimThreshold = 220; // Hunt down loose rebounds aggressively
+                    // Ball Press triggers
+                    let claimThreshold = 120;
+                    if (!ball.controllingPlayer) claimThreshold = 200; 
 
                     if (distToBall < claimThreshold && this.role !== 'G') {
                         const closestTeammate = allPlayers
                             .filter(p => p.team === this.team && p.role !== 'G')
                             .reduce((closest, p) => Math.hypot(ball.x - p.x, ball.y - p.y) < Math.hypot(ball.x - closest.x, ball.y - closest.y) ? p : closest, this);
 
-                        if (closestTeammate === this || distToBall < 45) {
+                        if (closestTeammate === this || distToBall < 40) {
                             targetX = ball.x;
                             targetY = ball.y;
                         }
                     }
                 }
 
-                // Smooth Linear Transformations
+                // Transform velocity frames
                 let dx = targetX - this.x;
                 let dy = targetY - this.y;
                 let dDist = Math.hypot(dx, dy);
@@ -238,11 +256,9 @@
                 this.x += this.vX;
                 this.y += this.vY;
 
-                // Restrict crossline field spilling borders
                 this.x = Math.max(pitch.pad + 10, Math.min(pitch.width - pitch.pad - 10, this.x));
                 this.y = Math.max(pitch.pad + 10, Math.min(pitch.height - pitch.pad - 10, this.y));
 
-                // Process active interception claim collision frames
                 if (!ball.controllingPlayer && distToBall < PLAYER_RADIUS + BALL_RADIUS && this.cooldown === 0) {
                     ball.controllingPlayer = this;
                     ball.lastPossessionTeam = this.team;
@@ -255,32 +271,32 @@
                 let highestScore = -Infinity;
 
                 teammates.forEach(p => {
+                    // Block rapid ping-pong looping to the same direct player
+                    if (p.id === this.lastPassTargetId && Math.random() < 0.85) return;
+
                     const dist = Math.hypot(p.x - this.x, p.y - this.y);
                     
-                    if (dist > 45 && dist < 250) {
+                    if (dist > 50 && dist < 260) {
                         const forwardProgress = this.team === 'blue' ? (this.y - p.y) : (p.y - this.y);
                         
-                        // Base calculation scoring metrics
-                        let score = forwardProgress * 2.5; // Reward playing forward paths
+                        // Favor positive forward development paths over recycling loops
+                        let score = forwardProgress * 4.0;
                         
-                        // Tactical Recycling: If deep inside opponent territory, reward passing BACK to completely open players to reset
-                        if (forwardProgress < 0) {
-                            score += 15; 
+                        if (forwardProgress <= 0) {
+                            score -= 25; // Penalize backing off unless trapped
                         }
 
-                        // Ray-casting intercept danger evaluation lines
                         let opponents = allPlayers.filter(o => o.team !== this.team);
                         let dangerousPath = false;
-                        let safetyMargin = 32; // Intercept shield calculation radius
+                        let safetyMargin = 26; 
 
                         opponents.forEach(o => {
                             const oDist = distToSegment({x: o.x, y: o.y}, {x: this.x, y: this.y}, {x: p.x, y: p.y});
                             if (oDist < safetyMargin) dangerousPath = true;
                         });
 
-                        // Reward targets situated away from crowding clusters
-                        let surroundingOpponents = opponents.filter(o => Math.hypot(o.x - p.x, o.y - p.y) < 60).length;
-                        score -= surroundingOpponents * 12;
+                        let surroundingOpponents = opponents.filter(o => Math.hypot(o.x - p.x, o.y - p.y) < 50).length;
+                        score -= surroundingOpponents * 15;
 
                         if (!dangerousPath && score > highestScore) {
                             highestScore = score;
@@ -297,24 +313,25 @@
                 const dy = targetPlayer.y - this.y;
                 const dist = Math.hypot(dx, dy);
                 
-                ball.vX = (dx / dist) * 8.0; // Crisp pass velocity acceleration
-                ball.vY = (dy / dist) * 8.0;
+                ball.vX = (dx / dist) * 8.5; 
+                ball.vY = (dy / dist) * 8.5;
                 
-                this.cooldown = 35; // Lock retention loops
-                targetPlayer.cooldown = 4;
+                this.cooldown = 30; 
+                targetPlayer.cooldown = 3;
+                targetPlayer.lastPassTargetId = this.id; // Push ID registry to block loop patterns
             }
 
             shoot(ball) {
                 ball.controllingPlayer = null;
-                const targetGoalX = pitch.width / 2 + (Math.random() * 34 - 17);
+                const targetGoalX = pitch.width / 2 + (Math.random() * 30 - 15);
                 const targetGoalY = this.team === 'blue' ? pitch.pad : pitch.height - pitch.pad;
                 
                 const dx = targetGoalX - this.x;
                 const dy = targetGoalY - this.y;
                 const dist = Math.hypot(dx, dy);
 
-                ball.vX = (dx / dist) * 11.5;
-                ball.vY = (dy / dist) * 11.5;
+                ball.vX = (dx / dist) * 12.0;
+                ball.vY = (dy / dist) * 12.0;
                 this.cooldown = 50;
             }
 
@@ -323,7 +340,7 @@
                 ctx.arc(this.x, this.y, PLAYER_RADIUS, 0, Math.PI * 2);
                 ctx.fillStyle = this.team === 'blue' ? '#2980b9' : '#c0392b';
                 ctx.fill();
-                ctx.strokeStyle = selectedPlayer === this ? '#f1c40f' : '#fff'; // Golden frame indicator if dragging chip
+                ctx.strokeStyle = selectedPlayer === this ? '#f1c40f' : '#fff'; 
                 ctx.lineWidth = selectedPlayer === this ? 3 : 1.5;
                 ctx.stroke();
 
@@ -361,10 +378,9 @@
                 } else {
                     this.x += this.vX;
                     this.y += this.vY;
-                    this.vX *= 0.972; // grass kinetic drag coefficients
-                    this.vY *= 0.972;
+                    this.vX *= 0.975; 
+                    this.vY *= 0.975;
 
-                    // Corner / Wall Jam Anti-Freeze calculations
                     let movementDelta = Math.hypot(this.x - this.lastX, this.y - this.lastY);
                     if (movementDelta < 0.3) {
                         this.stuckTimer++;
@@ -372,17 +388,15 @@
                         this.stuckTimer = 0;
                     }
 
-                    // Force clearance if frozen in corner for > 45 frames
-                    if (this.stuckTimer > 45) {
+                    if (this.stuckTimer > 40) {
                         this.vX = (Math.random() * 6 - 3);
-                        this.vY = this.y < pitch.height/2 ? 4 : -4; // Clear downward or upward toward pitch center
+                        this.vY = this.y < pitch.height/2 ? 5 : -5; 
                         this.stuckTimer = 0;
                     }
 
                     this.lastX = this.x;
                     this.lastY = this.y;
 
-                    // Perimeter collision calculations
                     if (this.x <= pitch.pad + BALL_RADIUS || this.x >= pitch.width - pitch.pad - BALL_RADIUS) {
                         this.vX *= -1;
                         this.x = this.x <= pitch.pad + BALL_RADIUS ? pitch.pad + BALL_RADIUS : pitch.width - pitch.pad - BALL_RADIUS;
@@ -399,7 +413,6 @@
                             updateScoreboard();
                             resetPositions();
                         } else {
-                            // Deflect loose ball back into gameplay lanes instead of stopping action lines
                             this.vY *= -0.8;
                             this.vX += (Math.random() * 4 - 2);
                             this.y = this.y <= pitch.pad ? pitch.pad + 6 : pitch.height - pitch.pad - 6;
@@ -421,7 +434,6 @@
         let players = [];
         const ball = new Ball();
 
-        // Mathematical coordinate tracking vectors
         function sqr(x) { return x * x; }
         function dist2(v, w) { return sqr(v.x - w.x) + sqr(v.y - w.y); }
         function distToSegmentSquared(p, v, w) {
@@ -439,12 +451,12 @@
             const totalOutfield = parts.reduce((a, b) => a + b, 0);
 
             if (totalOutfield !== 10 || parts.some(isNaN)) {
-                alert(`Invalid structure format: "${formationString}". Fields must add up to exactly 10 (e.g., 4-3-3, 3-5-2).`);
+                alert(`Invalid structure format: "${formationString}". Outfield lines must add up to 10.`);
                 return null;
             }
 
             const isBlue = team === 'blue';
-            const usableHeight = (pitch.height / 2) - pitch.pad - 50;
+            const usableHeight = (pitch.height / 2) - pitch.pad - 60;
             
             const gkY = isBlue ? pitch.height - pitch.pad - 20 : pitch.pad + 20;
             teamPlayers.push(new Player(team, 'G', pitch.width / 2, gkY, 1, 1, 0));
@@ -454,9 +466,9 @@
                 let progressFraction = lineIndex / (parts.length - 1);
                 let rowY;
                 if (isBlue) {
-                    rowY = (pitch.height / 2) + 50 + (1 - progressFraction) * usableHeight;
+                    rowY = (pitch.height / 2) + 60 + (1 - progressFraction) * usableHeight;
                 } else {
-                    rowY = pitch.pad + 50 + progressFraction * usableHeight;
+                    rowY = pitch.pad + 60 + progressFraction * usableHeight;
                 }
 
                 let role = 'M';
@@ -465,9 +477,14 @@
 
                 for (let i = 0; i < lineCount; i++) {
                     let horizontalFraction = lineCount === 1 ? 0.5 : i / (lineCount - 1);
-                    let paddingX = 55; 
+                    
+                    // COMPRESSION ENGINE: Compress horizontal padding if line is defensive to shield the penalty box channel
+                    let paddingX = 55;
+                    if (role === 'D') {
+                        paddingX = 85; // Forces defenders inward away from wide flanks during setup configurations
+                    }
+                    
                     let rowX = paddingX + horizontalFraction * (pitch.width - paddingX * 2);
-
                     teamPlayers.push(new Player(team, role, rowX, rowY, currentId++, lineCount, i));
                 }
             });
@@ -499,7 +516,6 @@
             scoreboard.innerText = `Blue ${blueScore} - ${redScore} Red`;
         }
 
-        // MOUSE / TOUCH INTERACTION LISTENER HANDLING FOR CLICK-AND-DRAG MANDATES
         function getMousePos(evt) {
             const rect = canvas.getBoundingClientRect();
             return {
@@ -510,7 +526,6 @@
 
         canvas.addEventListener('mousedown', (evt) => {
             const pos = getMousePos(evt);
-            // Search coordinates array to detect intersection with player chips
             for (let p of players) {
                 if (Math.hypot(p.x - pos.x, p.y - pos.y) < PLAYER_RADIUS + 5) {
                     selectedPlayer = p;
@@ -524,13 +539,11 @@
             if (!isDragging || !selectedPlayer) return;
             const pos = getMousePos(evt);
             
-            // Re-assign chip base anchors to drag location coordinates
             selectedPlayer.x = Math.max(pitch.pad, Math.min(pitch.width - pitch.pad, pos.x));
             selectedPlayer.y = Math.max(pitch.pad, Math.min(pitch.height - pitch.pad, pos.y));
             selectedPlayer.homeX = selectedPlayer.x;
             selectedPlayer.homeY = selectedPlayer.y;
 
-            // If updating setup manually while paused, force immediate visual update loop
             if (!isSimulating) {
                 ctx.clearRect(0, 0, pitch.width, pitch.height);
                 drawPitch();
