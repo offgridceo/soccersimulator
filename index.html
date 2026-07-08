@@ -3,51 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Elite Tactical Soccer Simulator v2</title>
+    <title>Elite Interactive Soccer Sandbox v3</title>
     <style>
         body {
             margin: 0;
             padding: 20px;
-            background-color: #1e1e24;
+            background-color: #1a1a1a;
             color: #fff;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
+            user-select: none;
         }
-        h1 { margin-bottom: 10px; font-weight: 400; }
+        h1 { margin-bottom: 5px; font-weight: 400; font-size: 24px; }
+        p { color: #aaa; margin: 0 0 15px 0; font-size: 14px; }
         #controls {
             display: flex;
             gap: 15px;
             margin-bottom: 15px;
-            background: #2a2a35;
-            padding: 15px;
+            background: #25252b;
+            padding: 12px 20px;
             border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.4);
             align-items: center;
             flex-wrap: wrap;
         }
-        .input-group { display: flex; flex-direction: column; gap: 5px; }
-        label { font-size: 12px; text-transform: uppercase; color: #aaa; letter-spacing: 1px; }
+        .input-group { display: flex; flex-direction: column; gap: 4px; }
+        label { font-size: 11px; text-transform: uppercase; color: #bbb; letter-spacing: 1px; font-weight: bold; }
         input {
-            padding: 8px;
+            padding: 6px;
             border-radius: 4px;
             border: 1px solid #444;
             background: #111;
             color: #fff;
-            width: 80px;
+            width: 70px;
             text-align: center;
             font-size: 14px;
         }
         button {
-            padding: 10px 20px;
+            padding: 8px 16px;
             border: none;
             border-radius: 4px;
             font-weight: bold;
             cursor: pointer;
-            transition: background 0.2s;
-            height: 38px;
-            margin-top: 15px;
+            transition: all 0.2s;
+            height: 34px;
         }
         #simulateBtn { background-color: #2ecc71; color: #fff; }
         #simulateBtn:hover { background-color: #27ae60; }
@@ -56,24 +57,26 @@
         #resetBtn:hover { background-color: #95a5a6; }
         #canvas-container {
             position: relative;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.6);
             border-radius: 8px;
             overflow: hidden;
         }
-        canvas { display: block; background-color: #27ae60; }
+        canvas { display: block; background-color: #27ae60; cursor: grab; }
+        canvas:active { cursor: grabbing; }
         #scoreboard {
-            margin-top: 10px;
             font-size: 18px;
             font-weight: bold;
-            background: #2a2a35;
-            padding: 8px 20px;
+            background: #111;
+            padding: 6px 16px;
             border-radius: 20px;
+            border: 1px solid #444;
         }
     </style>
 </head>
 <body>
 
-    <h1>Tactical Stress-Test Simulator (Positional AI)</h1>
+    <h1>Tactical Soccer Sandbox</h1>
+    <p>Type structures below OR click and drag any player chip manually to alter spacing.</p>
 
     <div id="controls">
         <div class="input-group">
@@ -85,12 +88,12 @@
             <input type="text" id="redFormation" value="4-4-2">
         </div>
         <button id="simulateBtn">Simulate Match</button>
-        <button id="resetBtn">Reset</button>
+        <button id="resetBtn">Reset All</button>
         <div id="scoreboard">Blue 0 - 0 Red</div>
     </div>
 
     <div id="canvas-container">
-        <canvas id="pitch" width="450" height="650"></canvas>
+        <canvas id="pitch" width="460" height="660"></canvas>
     </div>
 
     <script>
@@ -105,18 +108,22 @@
         let blueScore = 0;
         let redScore = 0;
         let lastScored = null;
+        
+        // Dragging State Tracking Variables
+        let selectedPlayer = null;
+        let isDragging = false;
 
         const pitch = {
             width: canvas.width,
             height: canvas.height,
             pad: 25,
             lineColor: 'rgba(255,255,255,0.7)',
-            grassColor: '#2d8a4e',
-            grassStreak: '#278045'
+            grassColor: '#27ae60',
+            grassStreak: '#219653'
         };
 
-        const PLAYER_RADIUS = 10;
-        const BALL_RADIUS = 5;
+        const PLAYER_RADIUS = 11;
+        const BALL_RADIUS = 5.5;
 
         class Player {
             constructor(team, role, homeX, homeY, id, totalInLine, indexInLine) {
@@ -128,7 +135,6 @@
                 this.x = homeX;
                 this.y = homeY;
                 
-                // Determine horizontal lane alignment (Left, Center, Right) to preserve structural width
                 this.lane = 'C'; 
                 if (totalInLine > 1) {
                     const pct = indexInLine / (totalInLine - 1);
@@ -136,7 +142,7 @@
                     else if (pct >= 0.7) this.lane = 'R';
                 }
 
-                this.speed = 2.4; 
+                this.speed = 2.5; 
                 this.vX = 0;
                 this.vY = 0;
                 this.cooldown = 0; 
@@ -144,6 +150,7 @@
 
             update(ball, allPlayers) {
                 if (this.cooldown > 0) this.cooldown--;
+                if (selectedPlayer === this) return; // Freeze dynamic AI logic calculation if being dragged manually
 
                 const teamInPossession = ball.controllingPlayer ? ball.controllingPlayer.team : ball.lastPossessionTeam;
                 const iHaveBall = ball.controllingPlayer === this;
@@ -154,69 +161,68 @@
                 const distToBall = Math.hypot(ball.x - this.x, ball.y - this.y);
 
                 if (iHaveBall) {
-                    // 1. BALL CARRIER LOGIC
-                    const distToGoal = Math.abs(this.y - opponentGoalY);
+                    // 1. BALL CARRIER INDEPENDENT THINKING TREE
+                    const distToGoal = Math.hypot(pitch.width/2 - this.x, opponentGoalY - this.y);
 
-                    // High Priority: Shoot if close enough
-                    if (distToGoal < 160 && Math.abs(this.x - pitch.width/2) < 130) {
+                    // A. Shoot if within shooting distance window
+                    if (distToGoal < 180) {
                         this.shoot(ball);
                         return;
                     }
 
-                    // Medium Priority: Scan systematically for a tactical pass
-                    let passTarget = this.findBestPassOption(allPlayers);
+                    // B. Systematically look to execute a smart tactical pass
+                    let passTarget = this.findSmartPass(allPlayers);
                     if (passTarget) {
                         this.pass(ball, passTarget);
                         return;
                     }
 
-                    // Low Priority: Dribble forward while preserving wide positioning if on the flank
-                    targetY = opponentGoalY;
-                    if (this.lane === 'L') targetX = Math.max(pitch.pad + 30, this.x - 5);
-                    else if (this.lane === 'R') targetX = Math.min(pitch.width - pitch.pad - 30, this.x + 5);
-                    else targetX = this.x + (pitch.width/2 - this.x) * 0.1;
+                    // C. Dribble directly toward opponent territory if passing lanes are blocked
+                    const dirY = this.team === 'blue' ? -1 : 1;
+                    targetY = this.y + dirY * 40;
+                    targetX = this.x + (pitch.width/2 - this.x) * 0.15; 
 
                 } else {
-                    // 2. OFF-BALL POSITIONAL ENGINE
+                    // 2. OFF-BALL COMBAT & TACTICAL STATE MACHINE
                     if (teamInPossession === this.team) {
-                        // ATTACKING TRANSITION: Push forward but stay in native lanes to space the field
-                        const attackProgression = (this.team === 'blue') ? (ball.y - pitch.height) * 0.4 : (ball.y * 0.4);
-                        targetY = this.homeY + attackProgression;
+                        // OFF-BALL ATTACKING STATE: Shift forward relative to ball location, spread out
+                        const progress = (this.team === 'blue') ? (ball.y - pitch.height) * 0.35 : (ball.y * 0.35);
+                        targetY = this.homeY + progress;
                         
-                        // Spread wide to create passing triangles
-                        if (this.lane === 'L') targetX = this.homeX - 25;
-                        else if (this.lane === 'R') targetX = this.homeX + 25;
-                        else targetX = this.homeX + (ball.x - pitch.width/2) * 0.2;
+                        if (this.lane === 'L') targetX = this.homeX - 35;
+                        else if (this.lane === 'R') targetX = this.homeX + 35;
+                        else targetX = this.homeX + (ball.x - pitch.width/2) * 0.25;
 
-                        if (this.role === 'D') targetY = this.homeY + (ball.y - this.homeY) * 0.3; // Containment line
+                        if (this.role === 'D') targetY = this.homeY + (ball.y - this.homeY) * 0.2; // Guard line safety anchoring
                     } else {
-                        // DEFENSIVE TRANSITION: Fall back into structure, compress lanes slightly
-                        targetY = this.homeY + (ball.y - this.homeY) * 0.5;
-                        targetX = this.homeX + (ball.x - pitch.width/2) * 0.15;
+                        // DEFENSIVE COMPRESSION STATE: Close ranks, track runners
+                        targetY = this.homeY + (ball.y - this.homeY) * 0.55;
+                        targetX = this.homeX + (ball.x - pitch.width/2) * 0.2;
 
                         if (this.role === 'G') {
-                            targetX = pitch.width / 2 + (ball.x - pitch.width / 2) * 0.15;
+                            targetX = pitch.width / 2 + (ball.x - pitch.width / 2) * 0.2;
                             targetY = this.homeY;
                         }
                     }
 
-                    // 3. BALL MAGNET PRESS REGULATION
-                    // Only press the ball if it enters your immediate zone, or if you are the designated absolute closest player
-                    const areaOfResponsibility = (this.role === 'G') ? 60 : 130;
-                    
-                    if (distToBall < areaOfResponsibility) {
+                    // 3. AGGRESSIVE LOOSE BALL SCRAMBLING Instinct
+                    // If no one controls the ball or opponent is close, register interest based on distance threshold matrix
+                    let claimThreshold = 140;
+                    if (!ball.controllingPlayer) claimThreshold = 220; // Hunt down loose rebounds aggressively
+
+                    if (distToBall < claimThreshold && this.role !== 'G') {
                         const closestTeammate = allPlayers
                             .filter(p => p.team === this.team && p.role !== 'G')
                             .reduce((closest, p) => Math.hypot(ball.x - p.x, ball.y - p.y) < Math.hypot(ball.x - closest.x, ball.y - closest.y) ? p : closest, this);
 
-                        if (closestTeammate === this || distToBall < 50) {
+                        if (closestTeammate === this || distToBall < 45) {
                             targetX = ball.x;
                             targetY = ball.y;
                         }
                     }
                 }
 
-                // Smooth Engine Physics Calculations
+                // Smooth Linear Transformations
                 let dx = targetX - this.x;
                 let dy = targetY - this.y;
                 let dDist = Math.hypot(dx, dy);
@@ -225,60 +231,64 @@
                     this.vX = (dx / dDist) * this.speed;
                     this.vY = (dy / dDist) * this.speed;
                 } else {
-                    this.vX *= 0.2;
-                    this.vY *= 0.2;
+                    this.vX *= 0.1;
+                    this.vY *= 0.1;
                 }
 
                 this.x += this.vX;
                 this.y += this.vY;
 
-                // Enforce boundaries
+                // Restrict crossline field spilling borders
                 this.x = Math.max(pitch.pad + 10, Math.min(pitch.width - pitch.pad - 10, this.x));
                 this.y = Math.max(pitch.pad + 10, Math.min(pitch.height - pitch.pad - 10, this.y));
 
-                // Interception calculation
+                // Process active interception claim collision frames
                 if (!ball.controllingPlayer && distToBall < PLAYER_RADIUS + BALL_RADIUS && this.cooldown === 0) {
                     ball.controllingPlayer = this;
                     ball.lastPossessionTeam = this.team;
                 }
             }
 
-            findBestPassOption(allPlayers) {
-                let options = allPlayers.filter(p => p.team === this.team && p !== this);
-                let bestOption = null;
+            findSmartPass(allPlayers) {
+                let teammates = allPlayers.filter(p => p.team === this.team && p !== this);
+                let bestTarget = null;
                 let highestScore = -Infinity;
 
-                options.forEach(p => {
+                teammates.forEach(p => {
                     const dist = Math.hypot(p.x - this.x, p.y - this.y);
                     
-                    // Filter out passes that are unrealistically short or impossibly long
-                    if (dist > 50 && dist < 240) {
+                    if (dist > 45 && dist < 250) {
                         const forwardProgress = this.team === 'blue' ? (this.y - p.y) : (p.y - this.y);
-                        const isCross = Math.abs(p.x - this.x) > 120;
                         
-                        // Scoring metric: heavily reward forward progression and tactical switches to the opposite wing
-                        let score = forwardProgress * 2.0 - dist * 0.1;
-                        if (isCross) score += 40; 
+                        // Base calculation scoring metrics
+                        let score = forwardProgress * 2.5; // Reward playing forward paths
+                        
+                        // Tactical Recycling: If deep inside opponent territory, reward passing BACK to completely open players to reset
+                        if (forwardProgress < 0) {
+                            score += 15; 
+                        }
 
-                        // Verify safety of the passing lane against active defenders
+                        // Ray-casting intercept danger evaluation lines
                         let opponents = allPlayers.filter(o => o.team !== this.team);
-                        let pathIntercepted = false;
-                        
+                        let dangerousPath = false;
+                        let safetyMargin = 32; // Intercept shield calculation radius
+
                         opponents.forEach(o => {
-                            const opponentDistToLine = distToSegment({x: o.x, y: o.y}, {x: this.x, y: this.y}, {x: p.x, y: p.y});
-                            // If an opponent is within defensive tracking radius of the passing lane line segment
-                            if (opponentDistToLine < 28) { 
-                                pathIntercepted = true;
-                            }
+                            const oDist = distToSegment({x: o.x, y: o.y}, {x: this.x, y: this.y}, {x: p.x, y: p.y});
+                            if (oDist < safetyMargin) dangerousPath = true;
                         });
 
-                        if (!pathIntercepted && score > highestScore) {
+                        // Reward targets situated away from crowding clusters
+                        let surroundingOpponents = opponents.filter(o => Math.hypot(o.x - p.x, o.y - p.y) < 60).length;
+                        score -= surroundingOpponents * 12;
+
+                        if (!dangerousPath && score > highestScore) {
                             highestScore = score;
-                            bestOption = p;
+                            bestTarget = p;
                         }
                     }
                 });
-                return bestOption;
+                return bestTarget;
             }
 
             pass(ball, targetPlayer) {
@@ -287,26 +297,25 @@
                 const dy = targetPlayer.y - this.y;
                 const dist = Math.hypot(dx, dy);
                 
-                // Crisp passing speeds
-                ball.vX = (dx / dist) * 7.5;
-                ball.vY = (dy / dist) * 7.5;
+                ball.vX = (dx / dist) * 8.0; // Crisp pass velocity acceleration
+                ball.vY = (dy / dist) * 8.0;
                 
-                this.cooldown = 30; 
-                targetPlayer.cooldown = 5;
+                this.cooldown = 35; // Lock retention loops
+                targetPlayer.cooldown = 4;
             }
 
             shoot(ball) {
                 ball.controllingPlayer = null;
-                const targetGoalX = pitch.width / 2 + (Math.random() * 30 - 15);
+                const targetGoalX = pitch.width / 2 + (Math.random() * 34 - 17);
                 const targetGoalY = this.team === 'blue' ? pitch.pad : pitch.height - pitch.pad;
                 
                 const dx = targetGoalX - this.x;
                 const dy = targetGoalY - this.y;
                 const dist = Math.hypot(dx, dy);
 
-                ball.vX = (dx / dist) * 11.0;
-                ball.vY = (dy / dist) * 11.0;
-                this.cooldown = 45;
+                ball.vX = (dx / dist) * 11.5;
+                ball.vY = (dy / dist) * 11.5;
+                this.cooldown = 50;
             }
 
             draw() {
@@ -314,12 +323,12 @@
                 ctx.arc(this.x, this.y, PLAYER_RADIUS, 0, Math.PI * 2);
                 ctx.fillStyle = this.team === 'blue' ? '#2980b9' : '#c0392b';
                 ctx.fill();
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = selectedPlayer === this ? '#f1c40f' : '#fff'; // Golden frame indicator if dragging chip
+                ctx.lineWidth = selectedPlayer === this ? 3 : 1.5;
                 ctx.stroke();
 
                 ctx.fillStyle = '#fff';
-                ctx.font = '9px Arial';
+                ctx.font = 'bold 9px Arial';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(this.role + this.lane, this.x, this.y);
@@ -327,7 +336,12 @@
         }
 
         class Ball {
-            constructor() { this.reset(); }
+            constructor() { 
+                this.reset();
+                this.stuckTimer = 0; 
+                this.lastX = 0;
+                this.lastY = 0;
+            }
             reset() {
                 this.x = pitch.width / 2;
                 this.y = pitch.height / 2;
@@ -338,17 +352,37 @@
             }
             update() {
                 if (this.controllingPlayer) {
-                    const offset = this.controllingPlayer.team === 'blue' ? -8 : 8;
+                    const offset = this.controllingPlayer.team === 'blue' ? -9 : 9;
                     this.x = this.controllingPlayer.x;
                     this.y = this.controllingPlayer.y + offset;
                     this.vX = 0;
                     this.vY = 0;
+                    this.stuckTimer = 0; 
                 } else {
                     this.x += this.vX;
                     this.y += this.vY;
-                    this.vX *= 0.975; // Ball friction roll
-                    this.vY *= 0.975;
+                    this.vX *= 0.972; // grass kinetic drag coefficients
+                    this.vY *= 0.972;
 
+                    // Corner / Wall Jam Anti-Freeze calculations
+                    let movementDelta = Math.hypot(this.x - this.lastX, this.y - this.lastY);
+                    if (movementDelta < 0.3) {
+                        this.stuckTimer++;
+                    } else {
+                        this.stuckTimer = 0;
+                    }
+
+                    // Force clearance if frozen in corner for > 45 frames
+                    if (this.stuckTimer > 45) {
+                        this.vX = (Math.random() * 6 - 3);
+                        this.vY = this.y < pitch.height/2 ? 4 : -4; // Clear downward or upward toward pitch center
+                        this.stuckTimer = 0;
+                    }
+
+                    this.lastX = this.x;
+                    this.lastY = this.y;
+
+                    // Perimeter collision calculations
                     if (this.x <= pitch.pad + BALL_RADIUS || this.x >= pitch.width - pitch.pad - BALL_RADIUS) {
                         this.vX *= -1;
                         this.x = this.x <= pitch.pad + BALL_RADIUS ? pitch.pad + BALL_RADIUS : pitch.width - pitch.pad - BALL_RADIUS;
@@ -365,9 +399,10 @@
                             updateScoreboard();
                             resetPositions();
                         } else {
-                            this.vY *= -1;
-                            this.y = this.y <= pitch.pad ? pitch.pad + 5 : pitch.height - pitch.pad - 5;
-                            this.vX += (Math.random() * 2 - 1);
+                            // Deflect loose ball back into gameplay lanes instead of stopping action lines
+                            this.vY *= -0.8;
+                            this.vX += (Math.random() * 4 - 2);
+                            this.y = this.y <= pitch.pad ? pitch.pad + 6 : pitch.height - pitch.pad - 6;
                         }
                     }
                 }
@@ -386,6 +421,7 @@
         let players = [];
         const ball = new Ball();
 
+        // Mathematical coordinate tracking vectors
         function sqr(x) { return x * x; }
         function dist2(v, w) { return sqr(v.x - w.x) + sqr(v.y - w.y); }
         function distToSegmentSquared(p, v, w) {
@@ -403,14 +439,14 @@
             const totalOutfield = parts.reduce((a, b) => a + b, 0);
 
             if (totalOutfield !== 10 || parts.some(isNaN)) {
-                alert(`Invalid format: "${formationString}". Set fields to sum up to 10.`);
+                alert(`Invalid structure format: "${formationString}". Fields must add up to exactly 10 (e.g., 4-3-3, 3-5-2).`);
                 return null;
             }
 
             const isBlue = team === 'blue';
-            const usableHeight = (pitch.height / 2) - pitch.pad - 40;
+            const usableHeight = (pitch.height / 2) - pitch.pad - 50;
             
-            const gkY = isBlue ? pitch.height - pitch.pad - 15 : pitch.pad + 15;
+            const gkY = isBlue ? pitch.height - pitch.pad - 20 : pitch.pad + 20;
             teamPlayers.push(new Player(team, 'G', pitch.width / 2, gkY, 1, 1, 0));
 
             let currentId = 2;
@@ -418,9 +454,9 @@
                 let progressFraction = lineIndex / (parts.length - 1);
                 let rowY;
                 if (isBlue) {
-                    rowY = (pitch.height / 2) + 40 + (1 - progressFraction) * usableHeight;
+                    rowY = (pitch.height / 2) + 50 + (1 - progressFraction) * usableHeight;
                 } else {
-                    rowY = pitch.pad + 40 + progressFraction * usableHeight;
+                    rowY = pitch.pad + 50 + progressFraction * usableHeight;
                 }
 
                 let role = 'M';
@@ -429,7 +465,7 @@
 
                 for (let i = 0; i < lineCount; i++) {
                     let horizontalFraction = lineCount === 1 ? 0.5 : i / (lineCount - 1);
-                    let paddingX = 50; 
+                    let paddingX = 55; 
                     let rowX = paddingX + horizontalFraction * (pitch.width - paddingX * 2);
 
                     teamPlayers.push(new Player(team, role, rowX, rowY, currentId++, lineCount, i));
@@ -462,6 +498,51 @@
         function updateScoreboard() {
             scoreboard.innerText = `Blue ${blueScore} - ${redScore} Red`;
         }
+
+        // MOUSE / TOUCH INTERACTION LISTENER HANDLING FOR CLICK-AND-DRAG MANDATES
+        function getMousePos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (evt.clientX - rect.left) * (canvas.width / rect.width),
+                y: (evt.clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+
+        canvas.addEventListener('mousedown', (evt) => {
+            const pos = getMousePos(evt);
+            // Search coordinates array to detect intersection with player chips
+            for (let p of players) {
+                if (Math.hypot(p.x - pos.x, p.y - pos.y) < PLAYER_RADIUS + 5) {
+                    selectedPlayer = p;
+                    isDragging = true;
+                    break;
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (evt) => {
+            if (!isDragging || !selectedPlayer) return;
+            const pos = getMousePos(evt);
+            
+            // Re-assign chip base anchors to drag location coordinates
+            selectedPlayer.x = Math.max(pitch.pad, Math.min(pitch.width - pitch.pad, pos.x));
+            selectedPlayer.y = Math.max(pitch.pad, Math.min(pitch.height - pitch.pad, pos.y));
+            selectedPlayer.homeX = selectedPlayer.x;
+            selectedPlayer.homeY = selectedPlayer.y;
+
+            // If updating setup manually while paused, force immediate visual update loop
+            if (!isSimulating) {
+                ctx.clearRect(0, 0, pitch.width, pitch.height);
+                drawPitch();
+                players.forEach(p => p.draw());
+                ball.draw();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            selectedPlayer = null;
+        });
 
         function drawPitch() {
             ctx.fillStyle = pitch.grassColor;
@@ -505,7 +586,6 @@
 
         simulateBtn.addEventListener('click', () => {
             if (!isSimulating) {
-                parseFormations();
                 isSimulating = true;
                 simulateBtn.innerText = "Pause Simulation";
                 simulateBtn.classList.add('active');
